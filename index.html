@@ -1,0 +1,999 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>FractalSound</title>
+		<style>
+			:root {
+				font-family:
+					Segoe UI,
+					Tahoma,
+					Geneva,
+					Verdana,
+					sans-serif;
+				line-height: 1.5;
+				font-weight: 400;
+				color: #1d1d1d;
+				background: linear-gradient(160deg, #f7f5ef 0%, #e6f0ff 100%);
+			}
+
+			* {
+				box-sizing: border-box;
+			}
+
+			body {
+				margin: 0;
+				min-height: 100vh;
+			}
+
+			#app {
+				min-height: 100vh;
+				display: grid;
+				align-items: start;
+				justify-items: center;
+				padding: 24px;
+			}
+
+			.app-shell {
+				text-align: left;
+				background: rgba(255, 255, 255, 0.88);
+				border: 1px solid rgba(0, 0, 0, 0.08);
+				border-radius: 16px;
+				padding: 32px;
+				max-width: 520px;
+				width: 100%;
+			}
+
+			h1 {
+				margin: 0 0 12px;
+				font-size: clamp(2rem, 3vw, 2.8rem);
+				text-align: center;
+			}
+
+			p {
+				margin: 0;
+				color: #444;
+				text-align: center;
+			}
+
+			.controls {
+				margin-top: 18px;
+				display: grid;
+				gap: 12px;
+			}
+
+			.tab-row {
+				display: flex;
+				gap: 2px;
+				align-items: flex-end;
+				border-bottom: 1px solid rgba(21, 71, 128, 0.22);
+				padding-bottom: 0;
+			}
+
+			.tab {
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				min-width: 112px;
+				padding: 10px 16px;
+				border: 1px solid rgba(21, 71, 128, 0.22);
+				border-bottom: none;
+				border-top-left-radius: 12px;
+				border-top-right-radius: 12px;
+				background: linear-gradient(180deg, #f3f7fc 0%, #e4edf8 100%);
+				color: #21466f;
+				font: inherit;
+				font-weight: 600;
+				cursor: pointer;
+				user-select: none;
+				transform: translateY(1px);
+				transition:
+					background 120ms ease,
+					color 120ms ease,
+					border-color 120ms ease;
+			}
+
+			.tab.active {
+				background: rgba(255, 255, 255, 0.92);
+				color: #0d2a4d;
+				border-color: #154780;
+				position: relative;
+				z-index: 1;
+			}
+
+			.tab:not(.active):hover {
+				background: linear-gradient(180deg, #ffffff 0%, #e8f1fb 100%);
+			}
+
+			.field {
+				display: grid;
+				gap: 6px;
+				text-align: left;
+			}
+
+			.zoom-row {
+				display: flex;
+				align-items: center;
+				justify-content: flex-start;
+				gap: 10px;
+			}
+
+			.field label {
+				font-size: 0.95rem;
+				font-weight: 600;
+			}
+
+			.field input:not(.zoom-input) {
+				width: 100%;
+				padding: 8px 10px;
+				border-radius: 8px;
+				border: 1px solid rgba(0, 0, 0, 0.2);
+				font: inherit;
+			}
+
+			.zoom-input {
+				display: inline-block;
+				width: 6ch;
+				min-width: 6ch;
+				text-align: center;
+				padding: 8px 6px;
+				border-radius: 8px;
+				border: 1px solid rgba(0, 0, 0, 0.2);
+				font: inherit;
+			}
+
+			input[type='number'] {
+				-moz-appearance: textfield;
+			}
+
+			input[type='number']::-webkit-outer-spin-button,
+			input[type='number']::-webkit-inner-spin-button {
+				-webkit-appearance: none;
+				margin: 0;
+			}
+
+			.file-input {
+				display: none;
+			}
+
+			.btn {
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				width: 112px;
+				padding: 9px 14px;
+				border: 1px solid #154780;
+				border-radius: 10px;
+				background: linear-gradient(180deg, #ffffff 0%, #dcecff 100%);
+				color: #0d2a4d;
+				font-weight: 600;
+				font: inherit;
+				text-decoration: none;
+				cursor: pointer;
+				transition:
+					transform 120ms ease,
+					box-shadow 120ms ease;
+			}
+
+			.btn:hover {
+				transform: translateY(-1px);
+				box-shadow: 0 3px 10px rgba(0, 0, 0, 0.12);
+			}
+
+			.file-row {
+				display: flex;
+				align-items: flex-start;
+				gap: 10px;
+				flex-wrap: wrap;
+			}
+
+			.action-row {
+				display: flex;
+				align-items: flex-start;
+				gap: 10px;
+			}
+
+			.btn:disabled {
+				opacity: 0.5;
+				cursor: not-allowed;
+				transform: none;
+				box-shadow: none;
+			}
+
+			.iteration {
+				margin: 2px 0 0;
+				font-size: 0.95rem;
+				font-weight: 600;
+				color: #17385f;
+				text-align: left;
+			}
+
+			.file-name {
+				font-size: 0.95rem;
+				color: #2a2a2a;
+			}
+
+			.status-text {
+				margin-top: 4px;
+				font-size: 0.92rem;
+				color: #355a82;
+				text-align: left;
+			}
+		</style>
+	</head>
+	<body>
+		<div id="app"></div>
+
+		<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+		<script>
+			const { createApp } = Vue;
+			const AudioContextClass =
+				window.AudioContext || window.webkitAudioContext;
+			const FRACTAL_RENDERER_SOURCE = `
+				const state = {
+					zoomFactor: 0.8,
+					originalChannels: [],
+					currentIteration: 0,
+					currentChannels: [],
+					highestRequestedIteration: 0,
+					isRendering: false,
+				};
+
+				function clampZoomFactor(value) {
+					const numericValue = Number(value);
+
+					if (!Number.isFinite(numericValue)) {
+						return 0.8;
+					}
+
+					return Math.min(1, Math.max(0.1, numericValue));
+				}
+
+				function cloneChannels(channels) {
+					return channels.map((channel) => channel.slice());
+				}
+
+				function stretchCenterSegment(channel, zoomFactor) {
+					const length = channel.length;
+
+					if (length <= 1) {
+						return channel.slice();
+					}
+
+					const segmentLength = Math.max(2, Math.min(length, length * zoomFactor));
+					const segmentStart = (length - segmentLength) / 2;
+					const denominator = length - 1;
+					const stretched = new Float32Array(length);
+
+					for (let index = 0; index < length; index += 1) {
+						const sourcePosition =
+							segmentStart + (index / denominator) * (segmentLength - 1);
+						const lowerIndex = Math.floor(sourcePosition);
+						const upperIndex = Math.min(length - 1, lowerIndex + 1);
+						const fraction = sourcePosition - lowerIndex;
+						const lowerSample = channel[lowerIndex] ?? 0;
+						const upperSample = channel[upperIndex] ?? lowerSample;
+
+						stretched[index] =
+							lowerSample + (upperSample - lowerSample) * fraction;
+					}
+
+					return stretched;
+				}
+
+				function buildNextIteration(previousChannels, originalChannels, zoomFactor) {
+					const originalMix = 1 - zoomFactor;
+					let peakAmplitude = 0;
+
+					const mixedChannels = previousChannels.map((previousChannel, channelIndex) => {
+						const originalChannel = originalChannels[channelIndex];
+						const zoomedChannel = stretchCenterSegment(previousChannel, zoomFactor);
+						const mixedChannel = new Float32Array(zoomedChannel.length);
+
+						for (let index = 0; index < zoomedChannel.length; index += 1) {
+							const mixedSample =
+								zoomedChannel[index] + originalChannel[index] * originalMix;
+							mixedChannel[index] = mixedSample;
+							peakAmplitude = Math.max(peakAmplitude, Math.abs(mixedSample));
+						}
+
+						return mixedChannel;
+					});
+
+					if (peakAmplitude <= 1) {
+						return mixedChannels;
+					}
+
+					const normalizationFactor = 1 / peakAmplitude;
+					mixedChannels.forEach((channel) => {
+						for (let index = 0; index < channel.length; index += 1) {
+							channel[index] *= normalizationFactor;
+						}
+					});
+
+					return mixedChannels;
+				}
+
+				function renderPendingIterations() {
+					if (state.isRendering) {
+						return;
+					}
+
+					state.isRendering = true;
+
+					while (state.currentIteration < state.highestRequestedIteration) {
+						state.currentChannels = buildNextIteration(
+							state.currentChannels,
+							state.originalChannels,
+							state.zoomFactor,
+						);
+						state.currentIteration += 1;
+						const payloadChannels = cloneChannels(state.currentChannels);
+
+						postMessage(
+							{
+								type: 'iteration-ready',
+								iteration: state.currentIteration,
+								channels: payloadChannels,
+							},
+							payloadChannels.map((channel) => channel.buffer),
+						);
+					}
+
+					state.isRendering = false;
+				}
+
+				onmessage = ({ data }) => {
+					switch (data.type) {
+						case 'setup':
+							state.zoomFactor = clampZoomFactor(data.zoomFactor);
+							state.originalChannels = data.originalChannels.map(
+								(channel) => new Float32Array(channel),
+							);
+							state.currentChannels = cloneChannels(state.originalChannels);
+							state.currentIteration = 0;
+							state.highestRequestedIteration = 0;
+							break;
+						case 'render-through':
+							state.highestRequestedIteration = Math.max(
+								state.highestRequestedIteration,
+								data.iteration,
+							);
+							renderPendingIterations();
+							break;
+					}
+				};
+			`;
+
+			createApp({
+				data() {
+					return {
+						appName: 'FractalSound',
+						message:
+							'Choose an audio file. Each pass zooms into the middle, stretches it back to full length, and mixes in part of the original wave.',
+						activeTab: 'wav',
+						wavFileName: '',
+						midiFileName: '',
+						midiLoopIteration: 0,
+						midiPlaybackReady: false,
+						midiIsPlaying: false,
+						zoomFactor: 0.8,
+						loopIteration: 0,
+						isPlaying: false,
+						statusText: 'Choose an audio file to build the fractal waveform.',
+						midiStatusText:
+							'Choose a MIDI file to prepare MIDI-specific processing.',
+						preparedThroughIteration: 0,
+						playbackReady: false,
+						audioContext: null,
+						originalBuffer: null,
+						renderedIterationBuffers: new Map(),
+						iterationResolvers: new Map(),
+						renderWorker: null,
+						renderWorkerUrl: '',
+						currentSource: null,
+						currentIterationStartTime: 0,
+						pausedOffset: 0,
+						playbackToken: 0,
+						prefetchDepth: 4,
+						maxBufferedIterations: 6,
+					};
+				},
+				beforeUnmount() {
+					this.destroyRenderWorker();
+					this.stopPlayback(true);
+				},
+				methods: {
+					clampZoomFactor(value) {
+						const numericValue = Number(value);
+
+						if (!Number.isFinite(numericValue)) {
+							return 0.8;
+						}
+
+						return Math.min(1, Math.max(0.1, numericValue));
+					},
+					setActiveTab(tab) {
+						this.activeTab = tab;
+					},
+					isWavFile(file) {
+						if (!file) {
+							return false;
+						}
+
+						const fileName = (file.name || '').toLowerCase();
+						const fileType = (file.type || '').toLowerCase();
+
+						return (
+							fileName.endsWith('.wav') ||
+							fileType === 'audio/wav' ||
+							fileType === 'audio/x-wav' ||
+							fileType === 'audio/wave' ||
+							fileType === 'audio/vnd.wave'
+						);
+					},
+					isMidiFile(file) {
+						if (!file) {
+							return false;
+						}
+
+						const fileName = (file.name || '').toLowerCase();
+						const fileType = (file.type || '').toLowerCase();
+
+						return (
+							fileName.endsWith('.mid') ||
+							fileName.endsWith('.midi') ||
+							fileType === 'audio/midi' ||
+							fileType === 'audio/x-midi' ||
+							fileType === 'application/x-midi' ||
+							fileType === 'application/vnd.midi'
+						);
+					},
+					async ensureAudioContext() {
+						if (!AudioContextClass) {
+							throw new Error('Web Audio is not available in this browser.');
+						}
+
+						if (!this.audioContext) {
+							this.audioContext = new AudioContextClass();
+						}
+
+						if (this.audioContext.state === 'suspended') {
+							await this.audioContext.resume();
+						}
+					},
+					createRenderWorker() {
+						this.destroyRenderWorker();
+
+						this.renderWorkerUrl = URL.createObjectURL(
+							new Blob([FRACTAL_RENDERER_SOURCE], {
+								type: 'application/javascript',
+							}),
+						);
+						this.renderWorker = new Worker(this.renderWorkerUrl);
+						this.renderWorker.addEventListener(
+							'message',
+							this.handleWorkerMessage,
+						);
+					},
+					destroyRenderWorker() {
+						if (this.renderWorker) {
+							this.renderWorker.removeEventListener(
+								'message',
+								this.handleWorkerMessage,
+							);
+							this.renderWorker.terminate();
+							this.renderWorker = null;
+						}
+
+						if (this.renderWorkerUrl) {
+							URL.revokeObjectURL(this.renderWorkerUrl);
+							this.renderWorkerUrl = '';
+						}
+					},
+					handleWorkerMessage(event) {
+						const { data } = event;
+
+						if (data.type !== 'iteration-ready') {
+							return;
+						}
+
+						const audioBuffer = this.createAudioBufferFromChannels(
+							data.channels,
+						);
+						this.renderedIterationBuffers.set(data.iteration, audioBuffer);
+						this.preparedThroughIteration = Math.max(
+							this.preparedThroughIteration,
+							data.iteration,
+						);
+
+						const pendingResolver = this.iterationResolvers.get(data.iteration);
+						if (pendingResolver) {
+							pendingResolver.resolve(audioBuffer);
+							this.iterationResolvers.delete(data.iteration);
+						}
+
+						this.pruneBufferedIterations();
+					},
+					createAudioBufferFromChannels(channels) {
+						const firstChannel = channels[0];
+						const frameCount = firstChannel.length;
+						const audioBuffer = this.audioContext.createBuffer(
+							channels.length,
+							frameCount,
+							this.originalBuffer.sampleRate,
+						);
+
+						channels.forEach((channel, channelIndex) => {
+							audioBuffer.copyToChannel(
+								new Float32Array(channel),
+								channelIndex,
+							);
+						});
+
+						return audioBuffer;
+					},
+					primeOriginalIteration() {
+						this.renderedIterationBuffers = this.originalBuffer
+							? new Map([[0, this.originalBuffer]])
+							: new Map();
+						this.iterationResolvers = new Map();
+						this.preparedThroughIteration = 0;
+					},
+					configureRenderWorker() {
+						if (!this.originalBuffer) {
+							return;
+						}
+
+						this.createRenderWorker();
+
+						const originalChannels = Array.from(
+							{ length: this.originalBuffer.numberOfChannels },
+							(_, channelIndex) =>
+								this.originalBuffer.getChannelData(channelIndex).slice(),
+						);
+
+						this.renderWorker.postMessage(
+							{
+								type: 'setup',
+								zoomFactor: this.zoomFactor,
+								originalChannels,
+							},
+							originalChannels.map((channel) => channel.buffer),
+						);
+					},
+					requestIterationsThrough(iteration) {
+						if (!this.renderWorker || iteration <= 0) {
+							return;
+						}
+
+						this.renderWorker.postMessage({
+							type: 'render-through',
+							iteration,
+						});
+					},
+					getIterationBuffer(iteration) {
+						if (this.renderedIterationBuffers.has(iteration)) {
+							return Promise.resolve(
+								this.renderedIterationBuffers.get(iteration),
+							);
+						}
+
+						const existingResolver = this.iterationResolvers.get(iteration);
+						if (existingResolver) {
+							return existingResolver.promise;
+						}
+
+						let resolveIteration;
+						let rejectIteration;
+						const promise = new Promise((resolve, reject) => {
+							resolveIteration = resolve;
+							rejectIteration = reject;
+						});
+
+						this.iterationResolvers.set(iteration, {
+							promise,
+							resolve: resolveIteration,
+							reject: rejectIteration,
+						});
+
+						this.requestIterationsThrough(iteration);
+						return promise;
+					},
+					requestPrecomputation(startIteration = this.loopIteration + 1) {
+						if (!this.originalBuffer) {
+							return;
+						}
+
+						this.requestIterationsThrough(
+							Math.max(startIteration, this.loopIteration) +
+								this.prefetchDepth -
+								1,
+						);
+					},
+					pruneBufferedIterations() {
+						if (!this.renderedIterationBuffers.size) {
+							return;
+						}
+
+						const lowestIterationToKeep = Math.max(1, this.loopIteration - 1);
+						for (const iteration of Array.from(
+							this.renderedIterationBuffers.keys(),
+						)) {
+							if (iteration === 0) {
+								continue;
+							}
+
+							if (
+								iteration < lowestIterationToKeep ||
+								iteration > this.loopIteration + this.maxBufferedIterations
+							) {
+								this.renderedIterationBuffers.delete(iteration);
+							}
+						}
+					},
+					async handleZoomFactorChange() {
+						this.zoomFactor = this.clampZoomFactor(this.zoomFactor);
+
+						if (!this.originalBuffer) {
+							return;
+						}
+
+						const shouldResume = this.isPlaying;
+						this.stopPlayback(true);
+						this.primeOriginalIteration();
+						this.configureRenderWorker();
+						this.loopIteration = 0;
+						this.pausedOffset = 0;
+						this.playbackReady = true;
+						this.statusText =
+							'Rebuilt the fractal waveform from the original audio.';
+						this.requestPrecomputation(1);
+
+						if (shouldResume) {
+							await this.playCurrentIteration();
+						}
+					},
+					stopPlayback(resetToStart = false) {
+						this.playbackToken += 1;
+
+						if (!this.audioContext || !this.currentSource) {
+							this.isPlaying = false;
+							if (resetToStart) {
+								this.pausedOffset = 0;
+							}
+							return;
+						}
+
+						if (resetToStart) {
+							this.pausedOffset = 0;
+						} else {
+							const currentBuffer = this.renderedIterationBuffers.get(
+								this.loopIteration,
+							);
+							const elapsed =
+								this.audioContext.currentTime - this.currentIterationStartTime;
+							this.pausedOffset = Math.max(
+								0,
+								Math.min(currentBuffer?.duration ?? 0, elapsed),
+							);
+						}
+
+						const source = this.currentSource;
+						this.currentSource = null;
+						this.isPlaying = false;
+
+						if (source) {
+							source.onended = null;
+							try {
+								source.stop();
+							} catch (error) {
+								// Source nodes can throw if already stopped.
+							}
+							source.disconnect();
+						}
+					},
+					async playCurrentIteration() {
+						if (!this.playbackReady || !this.originalBuffer) {
+							return;
+						}
+
+						await this.ensureAudioContext();
+						const playbackToken = this.playbackToken + 1;
+						this.playbackToken = playbackToken;
+						this.statusText = `Preparing iteration ${this.loopIteration + 1}...`;
+						this.requestPrecomputation(this.loopIteration + 1);
+
+						const iterationIndex = this.loopIteration;
+						const startOffset = this.pausedOffset;
+						const audioBuffer = await this.getIterationBuffer(iterationIndex);
+						const safeOffset = Math.min(
+							Math.max(0, startOffset),
+							Math.max(0, audioBuffer.duration - 0.001),
+						);
+
+						if (playbackToken !== this.playbackToken) {
+							return;
+						}
+
+						const source = this.audioContext.createBufferSource();
+						source.buffer = audioBuffer;
+						source.connect(this.audioContext.destination);
+						source.onended = () => {
+							if (this.currentSource !== source) {
+								return;
+							}
+
+							source.disconnect();
+							this.currentSource = null;
+
+							if (!this.isPlaying) {
+								return;
+							}
+
+							this.loopIteration = iterationIndex + 1;
+							this.pausedOffset = 0;
+							this.pruneBufferedIterations();
+							this.playCurrentIteration().catch((error) => {
+								this.isPlaying = false;
+								this.statusText =
+									error.message || 'Unable to continue playback.';
+							});
+						};
+
+						this.currentSource = source;
+						this.currentIterationStartTime =
+							this.audioContext.currentTime - safeOffset;
+						this.pausedOffset = 0;
+						this.isPlaying = true;
+						this.statusText = `Playing iteration ${iterationIndex + 1}.`;
+
+						try {
+							source.start(0, safeOffset);
+						} catch (error) {
+							this.currentSource = null;
+							this.isPlaying = false;
+							this.statusText = error.message || 'Unable to start playback.';
+						}
+
+						this.requestPrecomputation(iterationIndex + 1);
+					},
+					async togglePlayback() {
+						if (!this.playbackReady) {
+							return;
+						}
+
+						if (this.isPlaying) {
+							this.stopPlayback(false);
+							this.statusText = `Paused on iteration ${this.loopIteration + 1}.`;
+							return;
+						}
+
+						await this.playCurrentIteration();
+					},
+					async resetPlayback() {
+						if (!this.originalBuffer) {
+							return;
+						}
+
+						const shouldResume = this.isPlaying;
+						this.stopPlayback(true);
+						this.loopIteration = 0;
+						this.pausedOffset = 0;
+						this.statusText = 'Reset to the original waveform.';
+						this.requestPrecomputation(1);
+
+						if (shouldResume) {
+							await this.playCurrentIteration();
+						}
+					},
+					async handleAudioSelect(event) {
+						const [file] = event.target.files || [];
+
+						if (!file) {
+							return;
+						}
+
+						if (!this.isWavFile(file)) {
+							this.wavFileName = '';
+							this.playbackReady = false;
+							this.originalBuffer = null;
+							this.primeOriginalIteration();
+							this.statusText = 'Only WAV files are allowed in the WAV tab.';
+							event.target.value = '';
+							return;
+						}
+
+						this.wavFileName = file.name;
+						this.stopPlayback(true);
+						this.statusText =
+							'Decoding audio and building the first fractal pass...';
+
+						try {
+							await this.ensureAudioContext();
+							const fileBytes = await file.arrayBuffer();
+							const decodedBuffer = await this.audioContext.decodeAudioData(
+								fileBytes.slice(0),
+							);
+
+							this.originalBuffer = decodedBuffer;
+							this.primeOriginalIteration();
+							this.configureRenderWorker();
+							this.loopIteration = 0;
+							this.pausedOffset = 0;
+							this.playbackReady = true;
+							this.statusText =
+								'Loaded the original waveform. Precomputing upcoming passes in the background.';
+							this.requestPrecomputation(1);
+							await this.playCurrentIteration();
+						} catch (error) {
+							this.playbackReady = false;
+							this.originalBuffer = null;
+							this.primeOriginalIteration();
+							this.statusText =
+								error.message || 'Unable to decode this audio file.';
+						}
+
+						this.loopIteration = 0;
+						this.pausedOffset = 0;
+					},
+					handleMidiSelect(event) {
+						const [file] = event.target.files || [];
+
+						if (!file) {
+							return;
+						}
+
+						if (!this.isMidiFile(file)) {
+							this.midiFileName = '';
+							this.midiPlaybackReady = false;
+							this.midiLoopIteration = 0;
+							this.midiIsPlaying = false;
+							this.midiStatusText =
+								'Only MIDI files are allowed in the MIDI tab.';
+							event.target.value = '';
+							return;
+						}
+
+						this.midiFileName = file.name;
+						this.midiPlaybackReady = false;
+						this.midiLoopIteration = 0;
+						this.midiIsPlaying = false;
+						this.midiStatusText =
+							'MIDI file loaded. MIDI-specific playback/rendering is not wired into this tab yet.';
+					},
+				},
+				template: `
+					<main class="app-shell">
+						<h1>{{ appName }}</h1>
+						<p>{{ message }}</p>
+						<div class="controls">
+							<div class="tab-row">
+								<div
+									role="tab"
+									tabindex="0"
+									class="tab"
+									:class="{ active: activeTab === 'wav' }"
+									@click="setActiveTab('wav')"
+									@keydown.enter="setActiveTab('wav')"
+									@keydown.space.prevent="setActiveTab('wav')"
+								>
+									WAV
+								</div>
+								<div
+									role="tab"
+									tabindex="0"
+									class="tab"
+									:class="{ active: activeTab === 'midi' }"
+									@click="setActiveTab('midi')"
+									@keydown.enter="setActiveTab('midi')"
+									@keydown.space.prevent="setActiveTab('midi')"
+								>
+									MIDI
+								</div>
+							</div>
+							<template v-if="activeTab === 'wav'">
+							<div class="field">
+								<div class="zoom-row">
+									<label for="zoom-factor">Zoom factor per loop (0.1 to 1)</label>
+									<input
+										class="zoom-input"
+										id="zoom-factor"
+										type="number"
+										min="0.1"
+										max="1"
+										step="0.01"
+										v-model.number="zoomFactor"
+										@change="handleZoomFactorChange"
+									/>
+								</div>
+							</div>
+							<div class="file-row">
+								<label class="btn" for="audio-file">Choose file</label>
+								<input
+									id="audio-file"
+									class="file-input"
+									type="file"
+									accept=".wav,audio/wav,audio/x-wav,audio/wave,audio/vnd.wave"
+									@change="handleAudioSelect"
+								/>
+								<button
+									type="button"
+									class="btn"
+									@click="togglePlayback"
+									:disabled="!playbackReady"
+								>
+									{{ isPlaying ? 'Pause' : 'Play' }}
+								</button>
+								<button
+									type="button"
+									class="btn"
+									@click="resetPlayback"
+									:disabled="!playbackReady"
+								>
+									Reset
+								</button>
+							</div>
+							<p v-if="wavFileName" class="file-name">Selected: {{ wavFileName }}</p>
+							<p v-if="playbackReady" class="iteration">
+								Iteration: {{ loopIteration + 1 }}
+							</p>
+							<p v-if="playbackReady" class="status-text">
+								Prepared through iteration {{ preparedThroughIteration + 1 }}. {{ statusText }}
+							</p>
+							<p v-else class="status-text">{{ statusText }}</p>
+							</template>
+							<template v-else>
+								<div class="field">
+									<div class="zoom-row">
+										<label for="midi-zoom-factor">Zoom factor per loop (0.1 to 1)</label>
+										<input
+											class="zoom-input"
+											id="midi-zoom-factor"
+											type="number"
+											min="0.1"
+											max="1"
+											step="0.01"
+											v-model.number="zoomFactor"
+											disabled
+										/>
+									</div>
+								</div>
+								<div class="file-row">
+									<label class="btn" for="midi-file">Choose file</label>
+									<input
+										id="midi-file"
+										class="file-input"
+										type="file"
+										accept=".mid,.midi,audio/midi,audio/x-midi,application/x-midi,application/vnd.midi"
+										@change="handleMidiSelect"
+									/>
+									<button
+										type="button"
+										class="btn"
+										:disabled="!midiPlaybackReady"
+									>
+										{{ midiIsPlaying ? 'Pause' : 'Play' }}
+									</button>
+									<button
+										type="button"
+										class="btn"
+										:disabled="!midiPlaybackReady"
+									>
+										Reset
+									</button>
+								</div>
+								<p v-if="midiFileName" class="file-name">Selected: {{ midiFileName }}</p>
+								<p v-if="midiPlaybackReady" class="iteration">
+									Iteration: {{ midiLoopIteration + 1 }}
+								</p>
+								<p class="status-text">{{ midiStatusText }}</p>
+							</template>
+						</div>
+					</main>
+				`,
+			}).mount('#app');
+		</script>
+	</body>
+</html>
