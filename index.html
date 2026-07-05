@@ -132,6 +132,15 @@
 				font: inherit;
 			}
 
+			.field select {
+				width: 100%;
+				padding: 8px 10px;
+				border-radius: 8px;
+				border: 1px solid rgba(0, 0, 0, 0.2);
+				font: inherit;
+				background: #fff;
+			}
+
 			.zoom-input {
 				display: inline-block;
 				width: 6ch;
@@ -188,6 +197,15 @@
 				flex-wrap: wrap;
 			}
 
+			.midi-file-row {
+				gap: 8px;
+			}
+
+			.midi-file-row .btn {
+				width: 100px;
+				white-space: nowrap;
+			}
+
 			.action-row {
 				display: flex;
 				align-items: flex-start;
@@ -220,16 +238,100 @@
 				color: #355a82;
 				text-align: left;
 			}
+
+			.metric {
+				font-size: 0.92rem;
+				font-weight: 600;
+				color: #21466f;
+				text-align: left;
+			}
+
+			.progress-block {
+				display: grid;
+				gap: 6px;
+			}
+
+			.progress-row {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: 12px;
+			}
+
+			.progress-label,
+			.progress-value,
+			.time-readout {
+				font-size: 0.9rem;
+				color: #355a82;
+				text-align: left;
+			}
+
+			.progress-value,
+			.time-readout {
+				font-variant-numeric: tabular-nums;
+			}
+
+			progress {
+				width: 100%;
+				height: 10px;
+				accent-color: #154780;
+			}
 		</style>
 	</head>
 	<body>
 		<div id="app"></div>
 
 		<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+		<script src="https://unpkg.com/@tonejs/midi@2.0.28/build/Midi.js"></script>
 		<script>
 			const { createApp } = Vue;
 			const AudioContextClass =
 				window.AudioContext || window.webkitAudioContext;
+			const MIDI_ROOT_NOTE = 60;
+			const MIDI_SAMPLE_BASE_URL =
+				'https://madc0w.github.io/fractal-sound/samples/';
+			const MIDI_SAMPLE_FILES = [
+				'banjo.wav',
+				'bass-clarinet.wav',
+				'bassoon.wav',
+				'cello.wav',
+				'clarinet.wav',
+				'contrabassoon.wav',
+				'double-bass.wav',
+				'english-horn.wav',
+				'flute.wav',
+				'french-horn.wav',
+				'guitar.wav',
+				'mandolin.wav',
+				'oboe.wav',
+				'saxophone.wav',
+				'trombone.wav',
+				'trumpet.wav',
+				'tuba.wav',
+				'viola.wav',
+				'violin.wav',
+			];
+
+			function humanizeSampleName(fileName) {
+				return fileName
+					.replace(/\.wav$/i, '')
+					.split('-')
+					.map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+					.join(' ');
+			}
+
+			function cloneNote(note) {
+				return {
+					midi: note.midi,
+					time: note.time,
+					duration: note.duration,
+					velocity: note.velocity,
+				};
+			}
+
+			function cloneNotes(notes) {
+				return notes.map(cloneNote);
+			}
 			const FRACTAL_RENDERER_SOURCE = `
 				const state = {
 					zoomFactor: 0.8,
@@ -375,9 +477,40 @@
 						activeTab: 'wav',
 						wavFileName: '',
 						midiFileName: '',
+						midiInstrumentOptions: MIDI_SAMPLE_FILES.map((fileName) => ({
+							fileName,
+							label: humanizeSampleName(fileName),
+						})),
+						selectedMidiInstrument: 'violin.wav',
 						midiLoopIteration: 0,
 						midiPlaybackReady: false,
 						midiIsPlaying: false,
+						midiCumulativeZoom: 1,
+						midiSplitCount: 0,
+						midiLastSplitZoom: null,
+						midiLastSplitFromNotes: 0,
+						midiLastSplitToNotes: 0,
+						midiSecondsPerQuarter: 0.5,
+						midiOriginalNotes: [],
+						midiBasisNotes: [],
+						midiOriginalRenderedBuffer: null,
+						midiSampleBuffers: new Map(),
+						midiInstrumentBuffer: null,
+						midiInstrumentBufferName: '',
+						midiCurrentSource: null,
+						midiOriginalSource: null,
+						midiIsPlayingOriginal: false,
+						midiOriginalStartTime: 0,
+						midiCurrentIterationStartTime: 0,
+						midiPausedOffset: 0,
+						midiPlaybackToken: 0,
+						midiNextSplitZoom: 2,
+						midiCurrentPlaybackBuffer: null,
+						midiPlaybackTimeSeconds: 0,
+						midiPlaybackDurationSeconds: 0,
+						midiOperationLabel: '',
+						midiOperationCurrent: null,
+						midiOperationTotal: null,
 						zoomFactor: 0.8,
 						loopIteration: 0,
 						isPlaying: false,
@@ -396,13 +529,27 @@
 						currentIterationStartTime: 0,
 						pausedOffset: 0,
 						playbackToken: 0,
+						currentPlaybackBuffer: null,
+						playbackTimeSeconds: 0,
+						playbackDurationSeconds: 0,
+						wavOperationLabel: '',
+						wavOperationCurrent: null,
+						wavOperationTotal: null,
+						wavRequestedThroughIteration: 0,
+						uiTickerId: null,
 						prefetchDepth: 4,
 						maxBufferedIterations: 6,
 					};
 				},
+				mounted() {
+					this.startUiTicker();
+				},
 				beforeUnmount() {
+					this.stopUiTicker();
 					this.destroyRenderWorker();
 					this.stopPlayback(true);
+					this.stopMidiPlayback(true);
+					this.stopMidiOriginalPlayback();
 				},
 				methods: {
 					clampZoomFactor(value) {
@@ -416,6 +563,109 @@
 					},
 					setActiveTab(tab) {
 						this.activeTab = tab;
+					},
+					formatTime(seconds) {
+						const safeSeconds = Math.max(
+							0,
+							Number.isFinite(seconds) ? seconds : 0,
+						);
+						const minutes = Math.floor(safeSeconds / 60);
+						const remainingSeconds = Math.floor(safeSeconds % 60);
+						return `${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
+					},
+					setWavOperation(label, current = null, total = null) {
+						this.wavOperationLabel = label;
+						this.wavOperationCurrent = current;
+						this.wavOperationTotal = total;
+					},
+					clearWavOperation() {
+						this.wavOperationLabel = '';
+						this.wavOperationCurrent = null;
+						this.wavOperationTotal = null;
+					},
+					setMidiOperation(label, current = null, total = null) {
+						this.midiOperationLabel = label;
+						this.midiOperationCurrent = current;
+						this.midiOperationTotal = total;
+					},
+					clearMidiOperation() {
+						this.midiOperationLabel = '';
+						this.midiOperationCurrent = null;
+						this.midiOperationTotal = null;
+					},
+					startUiTicker() {
+						this.stopUiTicker();
+						this.uiTickerId = window.setInterval(() => {
+							this.updatePlaybackTimes();
+						}, 100);
+					},
+					stopUiTicker() {
+						if (this.uiTickerId) {
+							window.clearInterval(this.uiTickerId);
+							this.uiTickerId = null;
+						}
+					},
+					updatePlaybackTimes() {
+						if (this.currentPlaybackBuffer) {
+							const elapsed =
+								this.isPlaying && this.audioContext
+									? this.audioContext.currentTime -
+										this.currentIterationStartTime
+									: this.pausedOffset;
+							this.playbackDurationSeconds =
+								this.currentPlaybackBuffer.duration;
+							this.playbackTimeSeconds = Math.max(
+								0,
+								Math.min(this.currentPlaybackBuffer.duration, elapsed),
+							);
+						} else {
+							this.playbackDurationSeconds = 0;
+							this.playbackTimeSeconds = 0;
+						}
+
+						if (this.midiCurrentPlaybackBuffer) {
+							let elapsed = this.midiPausedOffset;
+							if (this.audioContext) {
+								if (this.midiIsPlayingOriginal) {
+									elapsed =
+										this.audioContext.currentTime - this.midiOriginalStartTime;
+								} else if (this.midiIsPlaying) {
+									elapsed =
+										this.audioContext.currentTime -
+										this.midiCurrentIterationStartTime;
+								}
+							}
+							this.midiPlaybackDurationSeconds =
+								this.midiCurrentPlaybackBuffer.duration;
+							this.midiPlaybackTimeSeconds = Math.max(
+								0,
+								Math.min(this.midiCurrentPlaybackBuffer.duration, elapsed),
+							);
+						} else {
+							this.midiPlaybackDurationSeconds = 0;
+							this.midiPlaybackTimeSeconds = 0;
+						}
+					},
+					formatZoomValue(value) {
+						if (!Number.isFinite(value)) {
+							return '1.00x';
+						}
+
+						if (value >= 100) {
+							return `${value.toFixed(0)}x`;
+						}
+
+						if (value >= 10) {
+							return `${value.toFixed(1)}x`;
+						}
+
+						return `${value.toFixed(2)}x`;
+					},
+					getCumulativeZoom(iteration) {
+						return Math.pow(
+							1 / this.clampZoomFactor(this.zoomFactor),
+							iteration,
+						);
 					},
 					isWavFile(file) {
 						if (!file) {
@@ -449,6 +699,9 @@
 							fileType === 'application/x-midi' ||
 							fileType === 'application/vnd.midi'
 						);
+					},
+					getSampleUrl(fileName) {
+						return new URL(fileName, MIDI_SAMPLE_BASE_URL).href;
 					},
 					async ensureAudioContext() {
 						if (!AudioContextClass) {
@@ -507,6 +760,26 @@
 							this.preparedThroughIteration,
 							data.iteration,
 						);
+						if (this.wavRequestedThroughIteration > this.loopIteration) {
+							const current = Math.max(
+								0,
+								this.preparedThroughIteration - this.loopIteration,
+							);
+							const total = Math.max(
+								1,
+								this.wavRequestedThroughIteration - this.loopIteration,
+							);
+
+							if (current >= total) {
+								this.clearWavOperation();
+							} else {
+								this.setWavOperation(
+									'Precomputing upcoming passes',
+									current,
+									total,
+								);
+							}
+						}
 
 						const pendingResolver = this.iterationResolvers.get(data.iteration);
 						if (pendingResolver) {
@@ -517,12 +790,14 @@
 						this.pruneBufferedIterations();
 					},
 					createAudioBufferFromChannels(channels) {
+						const sampleRate =
+							this.originalBuffer?.sampleRate || this.audioContext.sampleRate;
 						const firstChannel = channels[0];
 						const frameCount = firstChannel.length;
 						const audioBuffer = this.audioContext.createBuffer(
 							channels.length,
 							frameCount,
-							this.originalBuffer.sampleRate,
+							sampleRate,
 						);
 
 						channels.forEach((channel, channelIndex) => {
@@ -540,6 +815,552 @@
 							: new Map();
 						this.iterationResolvers = new Map();
 						this.preparedThroughIteration = 0;
+						this.currentPlaybackBuffer = this.originalBuffer;
+						this.playbackDurationSeconds = this.originalBuffer?.duration || 0;
+						this.playbackTimeSeconds = 0;
+					},
+					primeMidiIterations() {
+						this.midiSampleBuffers = this.midiOriginalRenderedBuffer
+							? new Map([[0, this.midiOriginalRenderedBuffer]])
+							: new Map();
+						this.midiBasisNotes = cloneNotes(this.midiOriginalNotes);
+						this.midiLoopIteration = 0;
+						this.midiPausedOffset = 0;
+						this.midiCurrentSource = null;
+						this.midiOriginalSource = null;
+						this.midiIsPlayingOriginal = false;
+						this.midiOriginalStartTime = 0;
+						this.midiCumulativeZoom = 1;
+						this.midiSplitCount = 0;
+						this.midiLastSplitZoom = null;
+						this.midiLastSplitFromNotes = 0;
+						this.midiLastSplitToNotes = 0;
+						this.midiNextSplitZoom = 2;
+						this.midiCurrentPlaybackBuffer = this.midiOriginalRenderedBuffer;
+						this.midiPlaybackDurationSeconds =
+							this.midiOriginalRenderedBuffer?.duration || 0;
+						this.midiPlaybackTimeSeconds = 0;
+					},
+					audioBufferToChannels(audioBuffer) {
+						return Array.from(
+							{ length: audioBuffer.numberOfChannels },
+							(_, channelIndex) =>
+								audioBuffer.getChannelData(channelIndex).slice(),
+						);
+					},
+					stretchCenterSegmentSamples(channel, zoomFactor) {
+						const length = channel.length;
+
+						if (length <= 1) {
+							return channel.slice();
+						}
+
+						const segmentLength = Math.max(
+							2,
+							Math.min(length, length * zoomFactor),
+						);
+						const segmentStart = (length - segmentLength) / 2;
+						const denominator = length - 1;
+						const stretched = new Float32Array(length);
+
+						for (let index = 0; index < length; index += 1) {
+							const sourcePosition =
+								segmentStart + (index / denominator) * (segmentLength - 1);
+							const lowerIndex = Math.floor(sourcePosition);
+							const upperIndex = Math.min(length - 1, lowerIndex + 1);
+							const fraction = sourcePosition - lowerIndex;
+							const lowerSample = channel[lowerIndex] ?? 0;
+							const upperSample = channel[upperIndex] ?? lowerSample;
+
+							stretched[index] =
+								lowerSample + (upperSample - lowerSample) * fraction;
+						}
+
+						return stretched;
+					},
+					buildNextIterationChannels(previousChannels, originalChannels) {
+						const originalMix = 1 - this.clampZoomFactor(this.zoomFactor);
+						let peakAmplitude = 0;
+
+						const mixedChannels = previousChannels.map(
+							(previousChannel, channelIndex) => {
+								const originalChannel = originalChannels[channelIndex];
+								const zoomedChannel = this.stretchCenterSegmentSamples(
+									previousChannel,
+									this.zoomFactor,
+								);
+								const mixedChannel = new Float32Array(zoomedChannel.length);
+
+								for (let index = 0; index < zoomedChannel.length; index += 1) {
+									const mixedSample =
+										zoomedChannel[index] + originalChannel[index] * originalMix;
+									mixedChannel[index] = mixedSample;
+									peakAmplitude = Math.max(
+										peakAmplitude,
+										Math.abs(mixedSample),
+									);
+								}
+
+								return mixedChannel;
+							},
+						);
+
+						if (peakAmplitude <= 1) {
+							return mixedChannels;
+						}
+
+						const normalizationFactor = 1 / peakAmplitude;
+						mixedChannels.forEach((channel) => {
+							for (let index = 0; index < channel.length; index += 1) {
+								channel[index] *= normalizationFactor;
+							}
+						});
+
+						return mixedChannels;
+					},
+					createBufferFromChannels(channels, sampleRate) {
+						const audioBuffer = this.audioContext.createBuffer(
+							channels.length,
+							channels[0].length,
+							sampleRate,
+						);
+
+						channels.forEach((channel, channelIndex) => {
+							audioBuffer.copyToChannel(channel, channelIndex);
+						});
+
+						return audioBuffer;
+					},
+					async loadMidiInstrumentBuffer() {
+						if (
+							this.midiInstrumentBuffer &&
+							this.midiInstrumentBufferName === this.selectedMidiInstrument
+						) {
+							return this.midiInstrumentBuffer;
+						}
+
+						this.setMidiOperation('Loading instrument sample');
+						const response = await fetch(
+							this.getSampleUrl(this.selectedMidiInstrument),
+						);
+						if (!response.ok) {
+							this.clearMidiOperation();
+							throw new Error('Unable to load the selected instrument sample.');
+						}
+
+						const sampleBytes = await response.arrayBuffer();
+						const decodedBuffer = await this.audioContext.decodeAudioData(
+							sampleBytes.slice(0),
+						);
+
+						this.midiInstrumentBuffer = decodedBuffer;
+						this.midiInstrumentBufferName = this.selectedMidiInstrument;
+						this.clearMidiOperation();
+						return decodedBuffer;
+					},
+					flattenMidiNotes(midi) {
+						return midi.tracks
+							.flatMap((track) =>
+								track.notes.map((note) => ({
+									midi: note.midi,
+									time: note.time,
+									duration: note.duration,
+									velocity: note.velocity,
+								})),
+							)
+							.sort(
+								(left, right) =>
+									left.time - right.time || left.midi - right.midi,
+							);
+					},
+					subdivideMidiNotes(notes) {
+						return notes.flatMap((note) => {
+							const halfDuration = Math.max(0.01, note.duration / 2);
+							return [
+								{ ...cloneNote(note), duration: halfDuration },
+								{
+									...cloneNote(note),
+									time: note.time + halfDuration,
+									duration: halfDuration,
+								},
+							];
+						});
+					},
+					applyPendingMidiSplits(iteration) {
+						const cumulativeZoom = this.getCumulativeZoom(iteration);
+						while (cumulativeZoom >= this.midiNextSplitZoom) {
+							const splitZoom = this.midiNextSplitZoom;
+							const previousNoteCount = this.midiBasisNotes.length;
+							this.midiBasisNotes = this.subdivideMidiNotes(
+								this.midiBasisNotes,
+							);
+							this.midiSplitCount += 1;
+							this.midiLastSplitZoom = splitZoom;
+							this.midiLastSplitFromNotes = previousNoteCount;
+							this.midiLastSplitToNotes = this.midiBasisNotes.length;
+							this.midiNextSplitZoom *= 2;
+						}
+
+						this.midiCumulativeZoom = cumulativeZoom;
+					},
+					async renderSampledMidi(
+						notes,
+						sampleBuffer,
+						compressSampleToQuarterNote,
+					) {
+						this.setMidiOperation(
+							compressSampleToQuarterNote
+								? 'Rendering zoomed MIDI audio'
+								: 'Rendering original MIDI audio',
+						);
+						const totalDuration =
+							notes.reduce(
+								(maximum, note) => Math.max(maximum, note.time + note.duration),
+								0,
+							) + 0.1;
+						const sampleRate = this.audioContext.sampleRate;
+						const offlineContext = new OfflineAudioContext(
+							sampleBuffer.numberOfChannels,
+							Math.ceil(totalDuration * sampleRate),
+							sampleRate,
+						);
+						const baseRate = compressSampleToQuarterNote
+							? sampleBuffer.duration / this.midiSecondsPerQuarter
+							: 1;
+
+						notes.forEach((note) => {
+							const source = offlineContext.createBufferSource();
+							const gainNode = offlineContext.createGain();
+							const startTime = Math.max(0, note.time);
+							const endTime = Math.max(
+								startTime + 0.01,
+								note.time + note.duration,
+							);
+							const attackTime = Math.min(
+								0.01,
+								Math.max(0.002, note.duration * 0.12),
+							);
+							const releaseTime = Math.min(
+								0.02,
+								Math.max(0.005, note.duration * 0.18),
+							);
+							const sustainTime = Math.max(
+								startTime + attackTime,
+								endTime - releaseTime,
+							);
+
+							source.buffer = sampleBuffer;
+							source.playbackRate.value =
+								baseRate * Math.pow(2, (note.midi - MIDI_ROOT_NOTE) / 12);
+							gainNode.gain.setValueAtTime(0, startTime);
+							gainNode.gain.linearRampToValueAtTime(
+								note.velocity || 0.85,
+								startTime + attackTime,
+							);
+							gainNode.gain.setValueAtTime(note.velocity || 0.85, sustainTime);
+							gainNode.gain.linearRampToValueAtTime(0, endTime);
+
+							source.connect(gainNode);
+							gainNode.connect(offlineContext.destination);
+							source.start(startTime);
+							source.stop(endTime);
+						});
+
+						const renderedBuffer = await offlineContext.startRendering();
+						this.clearMidiOperation();
+						return renderedBuffer;
+					},
+					async prepareMidiOriginalRender() {
+						const instrumentBuffer = await this.loadMidiInstrumentBuffer();
+						this.midiOriginalRenderedBuffer = await this.renderSampledMidi(
+							this.midiOriginalNotes,
+							instrumentBuffer,
+							false,
+						);
+						this.primeMidiIterations();
+					},
+					async getMidiSampleBufferForIteration(iteration) {
+						if (this.midiSampleBuffers.has(iteration)) {
+							return this.midiSampleBuffers.get(iteration);
+						}
+
+						let highestPreparedIteration = Math.max(
+							...this.midiSampleBuffers.keys(),
+						);
+						let currentBuffer = this.midiSampleBuffers.get(
+							highestPreparedIteration,
+						);
+
+						while (highestPreparedIteration < iteration) {
+							const nextChannels = this.buildNextIterationChannels(
+								this.audioBufferToChannels(currentBuffer),
+								this.audioBufferToChannels(this.midiOriginalRenderedBuffer),
+							);
+							currentBuffer = this.createBufferFromChannels(
+								nextChannels,
+								this.midiOriginalRenderedBuffer.sampleRate,
+							);
+							highestPreparedIteration += 1;
+							this.midiSampleBuffers.set(
+								highestPreparedIteration,
+								currentBuffer,
+							);
+						}
+
+						return currentBuffer;
+					},
+					async renderMidiIterationOutput(iteration) {
+						this.applyPendingMidiSplits(iteration);
+						const sampleBuffer =
+							await this.getMidiSampleBufferForIteration(iteration);
+						return this.renderSampledMidi(
+							this.midiBasisNotes,
+							sampleBuffer,
+							true,
+						);
+					},
+					stopMidiPlayback(resetToStart = false) {
+						this.midiPlaybackToken += 1;
+						this.stopMidiOriginalPlayback();
+
+						if (!this.audioContext || !this.midiCurrentSource) {
+							this.midiIsPlaying = false;
+							if (resetToStart) {
+								this.midiPausedOffset = 0;
+							}
+							return;
+						}
+
+						if (resetToStart) {
+							this.midiPausedOffset = 0;
+						} else {
+							const elapsed =
+								this.audioContext.currentTime -
+								this.midiCurrentIterationStartTime;
+							this.midiPausedOffset = Math.max(0, elapsed);
+						}
+
+						const source = this.midiCurrentSource;
+						this.midiCurrentSource = null;
+						this.midiIsPlaying = false;
+
+						if (source) {
+							source.onended = null;
+							try {
+								source.stop();
+							} catch (error) {
+								// Source nodes can throw if already stopped.
+							}
+							source.disconnect();
+						}
+					},
+					stopMidiOriginalPlayback() {
+						const source = this.midiOriginalSource;
+						this.midiOriginalSource = null;
+						this.midiIsPlayingOriginal = false;
+
+						if (source) {
+							source.onended = null;
+							try {
+								source.stop();
+							} catch (error) {
+								// Source nodes can throw if already stopped.
+							}
+							source.disconnect();
+						}
+					},
+					async playOriginalMidi() {
+						if (!this.midiOriginalRenderedBuffer) {
+							return;
+						}
+
+						await this.ensureAudioContext();
+						this.stopMidiPlayback(true);
+
+						const source = this.audioContext.createBufferSource();
+						source.buffer = this.midiOriginalRenderedBuffer;
+						source.connect(this.audioContext.destination);
+						source.onended = () => {
+							if (this.midiOriginalSource !== source) {
+								return;
+							}
+
+							source.disconnect();
+							this.midiOriginalSource = null;
+							this.midiIsPlayingOriginal = false;
+							this.midiPausedOffset = 0;
+							this.midiStatusText =
+								'Finished playing original MIDI with selected instrument.';
+						};
+
+						this.midiOriginalSource = source;
+						this.midiCurrentPlaybackBuffer = this.midiOriginalRenderedBuffer;
+						this.midiPlaybackDurationSeconds =
+							this.midiOriginalRenderedBuffer.duration;
+						this.midiPlaybackTimeSeconds = 0;
+						this.midiPausedOffset = 0;
+						this.midiIsPlaying = false;
+						this.midiIsPlayingOriginal = true;
+						this.midiOriginalStartTime = this.audioContext.currentTime;
+						this.clearMidiOperation();
+						this.midiStatusText =
+							'Playing original MIDI with selected instrument.';
+
+						try {
+							source.start(0);
+						} catch (error) {
+							this.stopMidiOriginalPlayback();
+							this.midiStatusText =
+								error.message || 'Unable to start original MIDI playback.';
+						}
+					},
+					async playCurrentMidiIteration() {
+						if (!this.midiPlaybackReady || !this.midiOriginalRenderedBuffer) {
+							return;
+						}
+
+						await this.ensureAudioContext();
+						this.stopMidiOriginalPlayback();
+						const playbackToken = this.midiPlaybackToken + 1;
+						this.midiPlaybackToken = playbackToken;
+						this.applyPendingMidiSplits(this.midiLoopIteration);
+						this.midiStatusText = `Rendering iteration ${this.midiLoopIteration + 1} at ${this.formatZoomValue(this.midiCumulativeZoom)} cumulative zoom...`;
+
+						const iterationIndex = this.midiLoopIteration;
+						const startOffset = this.midiPausedOffset;
+						const audioBuffer =
+							await this.renderMidiIterationOutput(iterationIndex);
+						this.midiCurrentPlaybackBuffer = audioBuffer;
+						this.midiPlaybackDurationSeconds = audioBuffer.duration;
+						const safeOffset = Math.min(
+							Math.max(0, startOffset),
+							Math.max(0, audioBuffer.duration - 0.001),
+						);
+
+						if (playbackToken !== this.midiPlaybackToken) {
+							return;
+						}
+
+						const source = this.audioContext.createBufferSource();
+						source.buffer = audioBuffer;
+						source.connect(this.audioContext.destination);
+						source.onended = () => {
+							if (this.midiCurrentSource !== source) {
+								return;
+							}
+
+							source.disconnect();
+							this.midiCurrentSource = null;
+
+							if (!this.midiIsPlaying) {
+								return;
+							}
+
+							this.midiLoopIteration = iterationIndex + 1;
+							this.midiPausedOffset = 0;
+							this.playCurrentMidiIteration().catch((error) => {
+								this.midiIsPlaying = false;
+								this.midiStatusText =
+									error.message || 'Unable to continue MIDI playback.';
+							});
+						};
+
+						this.midiCurrentSource = source;
+						this.midiCurrentIterationStartTime =
+							this.audioContext.currentTime - safeOffset;
+						this.midiPausedOffset = 0;
+						this.midiIsPlaying = true;
+						this.midiIsPlayingOriginal = false;
+						this.midiStatusText = `Playing iteration ${iterationIndex + 1} at ${this.formatZoomValue(this.midiCumulativeZoom)} cumulative zoom.`;
+
+						try {
+							source.start(0, safeOffset);
+						} catch (error) {
+							this.midiCurrentSource = null;
+							this.midiIsPlaying = false;
+							this.midiStatusText =
+								error.message || 'Unable to start MIDI playback.';
+						}
+					},
+					async toggleMidiPlayback() {
+						if (!this.midiPlaybackReady) {
+							return;
+						}
+
+						if (this.midiIsPlaying) {
+							this.stopMidiPlayback(false);
+							this.midiStatusText = `Paused on iteration ${this.midiLoopIteration + 1} at ${this.formatZoomValue(this.midiCumulativeZoom)} cumulative zoom.`;
+							return;
+						}
+
+						await this.playCurrentMidiIteration();
+					},
+					async resetMidiPlayback() {
+						if (!this.midiOriginalRenderedBuffer) {
+							return;
+						}
+
+						const shouldResume = this.midiIsPlaying;
+						this.stopMidiPlayback(true);
+						this.primeMidiIterations();
+						this.midiPlaybackReady = true;
+						this.midiStatusText = 'Reset to the original MIDI basis.';
+						this.clearMidiOperation();
+
+						if (shouldResume) {
+							await this.playCurrentMidiIteration();
+						}
+					},
+					async handleMidiZoomFactorChange() {
+						this.zoomFactor = this.clampZoomFactor(this.zoomFactor);
+
+						if (!this.midiOriginalRenderedBuffer) {
+							return;
+						}
+
+						const shouldResume = this.midiIsPlaying;
+						this.stopMidiPlayback(true);
+						this.primeMidiIterations();
+						this.midiPlaybackReady = true;
+						this.midiStatusText =
+							'Rebuilt MIDI fractal processing from the original render.';
+
+						if (shouldResume) {
+							await this.playCurrentMidiIteration();
+						}
+					},
+					async handleMidiInstrumentChange() {
+						if (!this.midiOriginalNotes.length) {
+							this.midiInstrumentBuffer = null;
+							this.midiInstrumentBufferName = '';
+							return;
+						}
+
+						const shouldResume = this.midiIsPlaying;
+						this.stopMidiPlayback(true);
+						this.midiStatusText = 'Reloading the original MIDI instrument...';
+						this.setMidiOperation('Reloading original instrument');
+
+						try {
+							this.midiInstrumentBuffer = null;
+							this.midiInstrumentBufferName = '';
+							await this.prepareMidiOriginalRender();
+							this.midiPlaybackReady = true;
+							this.midiStatusText =
+								'Original MIDI rerendered with the selected instrument.';
+							this.clearMidiOperation();
+
+							if (shouldResume) {
+								await this.playCurrentMidiIteration();
+							}
+						} catch (error) {
+							this.midiPlaybackReady = false;
+							this.stopMidiOriginalPlayback();
+							this.clearMidiOperation();
+							this.midiStatusText =
+								error.message ||
+								'Unable to reload the selected MIDI instrument.';
+						}
 					},
 					configureRenderWorker() {
 						if (!this.originalBuffer) {
@@ -567,6 +1388,19 @@
 						if (!this.renderWorker || iteration <= 0) {
 							return;
 						}
+
+						this.wavRequestedThroughIteration = Math.max(
+							this.wavRequestedThroughIteration,
+							iteration,
+						);
+						this.setWavOperation(
+							'Precomputing upcoming passes',
+							Math.max(0, this.preparedThroughIteration - this.loopIteration),
+							Math.max(
+								1,
+								this.wavRequestedThroughIteration - this.loopIteration,
+							),
+						);
 
 						this.renderWorker.postMessage({
 							type: 'render-through',
@@ -649,6 +1483,7 @@
 						this.playbackReady = true;
 						this.statusText =
 							'Rebuilt the fractal waveform from the original audio.';
+						this.clearWavOperation();
 						this.requestPrecomputation(1);
 
 						if (shouldResume) {
@@ -708,6 +1543,8 @@
 						const iterationIndex = this.loopIteration;
 						const startOffset = this.pausedOffset;
 						const audioBuffer = await this.getIterationBuffer(iterationIndex);
+						this.currentPlaybackBuffer = audioBuffer;
+						this.playbackDurationSeconds = audioBuffer.duration;
 						const safeOffset = Math.min(
 							Math.max(0, startOffset),
 							Math.max(0, audioBuffer.duration - 0.001),
@@ -782,6 +1619,7 @@
 						this.loopIteration = 0;
 						this.pausedOffset = 0;
 						this.statusText = 'Reset to the original waveform.';
+						this.clearWavOperation();
 						this.requestPrecomputation(1);
 
 						if (shouldResume) {
@@ -809,6 +1647,7 @@
 						this.stopPlayback(true);
 						this.statusText =
 							'Decoding audio and building the first fractal pass...';
+						this.setWavOperation('Decoding WAV');
 
 						try {
 							await this.ensureAudioContext();
@@ -825,12 +1664,14 @@
 							this.playbackReady = true;
 							this.statusText =
 								'Loaded the original waveform. Precomputing upcoming passes in the background.';
+							this.clearWavOperation();
 							this.requestPrecomputation(1);
 							await this.playCurrentIteration();
 						} catch (error) {
 							this.playbackReady = false;
 							this.originalBuffer = null;
 							this.primeOriginalIteration();
+							this.clearWavOperation();
 							this.statusText =
 								error.message || 'Unable to decode this audio file.';
 						}
@@ -838,7 +1679,7 @@
 						this.loopIteration = 0;
 						this.pausedOffset = 0;
 					},
-					handleMidiSelect(event) {
+					async handleMidiSelect(event) {
 						const [file] = event.target.files || [];
 
 						if (!file) {
@@ -850,6 +1691,11 @@
 							this.midiPlaybackReady = false;
 							this.midiLoopIteration = 0;
 							this.midiIsPlaying = false;
+							this.midiOriginalNotes = [];
+							this.midiBasisNotes = [];
+							this.midiOriginalRenderedBuffer = null;
+							this.midiSampleBuffers = new Map();
+							this.midiCumulativeZoom = 1;
 							this.midiStatusText =
 								'Only MIDI files are allowed in the MIDI tab.';
 							event.target.value = '';
@@ -857,11 +1703,51 @@
 						}
 
 						this.midiFileName = file.name;
-						this.midiPlaybackReady = false;
-						this.midiLoopIteration = 0;
-						this.midiIsPlaying = false;
+						this.stopMidiPlayback(true);
 						this.midiStatusText =
-							'MIDI file loaded. MIDI-specific playback/rendering is not wired into this tab yet.';
+							'Parsing MIDI and rendering the original instrument...';
+						this.setMidiOperation('Parsing MIDI');
+
+						try {
+							await this.ensureAudioContext();
+							if (typeof Midi !== 'function') {
+								throw new Error('The MIDI parser library is unavailable.');
+							}
+
+							const midiBytes = await file.arrayBuffer();
+							const midi = new Midi(midiBytes);
+							const parsedNotes = this.flattenMidiNotes(midi);
+
+							if (!parsedNotes.length) {
+								throw new Error(
+									'No playable notes were found in this MIDI file.',
+								);
+							}
+
+							const bpm = midi.header.tempos[0]?.bpm || 120;
+							this.midiSecondsPerQuarter = 60 / bpm;
+							this.midiOriginalNotes = cloneNotes(parsedNotes);
+							this.midiBasisNotes = cloneNotes(parsedNotes);
+							this.midiLoopIteration = 0;
+							this.midiPausedOffset = 0;
+							this.midiCumulativeZoom = 1;
+							await this.prepareMidiOriginalRender();
+							this.midiPlaybackReady = true;
+							this.midiStatusText =
+								'Original MIDI rendered. C4 now maps to the full original sound compressed to a quarter note.';
+							this.clearMidiOperation();
+							await this.playCurrentMidiIteration();
+						} catch (error) {
+							this.midiPlaybackReady = false;
+							this.midiOriginalNotes = [];
+							this.midiBasisNotes = [];
+							this.midiOriginalRenderedBuffer = null;
+							this.stopMidiOriginalPlayback();
+							this.midiSampleBuffers = new Map();
+							this.clearMidiOperation();
+							this.midiStatusText =
+								error.message || 'Unable to process this MIDI file.';
+						}
 					},
 				},
 				template: `
@@ -936,6 +1822,22 @@
 								</button>
 							</div>
 							<p v-if="wavFileName" class="file-name">Selected: {{ wavFileName }}</p>
+							<div v-if="playbackReady || wavOperationLabel" class="progress-block">
+								<div class="progress-row">
+									<span class="progress-label">{{ wavOperationLabel || 'Playback ready' }}</span>
+									<span v-if="wavOperationTotal" class="progress-value">
+										{{ Math.min(wavOperationCurrent || 0, wavOperationTotal) }}/{{ wavOperationTotal }}
+									</span>
+								</div>
+								<progress
+									v-if="wavOperationLabel"
+									:max="wavOperationTotal || 1"
+									:value="wavOperationTotal ? Math.min(wavOperationCurrent || 0, wavOperationTotal) : null"
+								></progress>
+							</div>
+							<p v-if="playbackReady || currentPlaybackBuffer" class="metric time-readout">
+								Playback: {{ formatTime(playbackTimeSeconds) }} / {{ formatTime(playbackDurationSeconds) }}
+							</p>
 							<p v-if="playbackReady" class="iteration">
 								Iteration: {{ loopIteration + 1 }}
 							</p>
@@ -945,6 +1847,22 @@
 							<p v-else class="status-text">{{ statusText }}</p>
 							</template>
 							<template v-else>
+								<div class="field">
+									<label for="midi-instrument">Original MIDI instrument</label>
+									<select
+										id="midi-instrument"
+										v-model="selectedMidiInstrument"
+										@change="handleMidiInstrumentChange"
+									>
+										<option
+											v-for="instrument in midiInstrumentOptions"
+											:key="instrument.fileName"
+											:value="instrument.fileName"
+										>
+											{{ instrument.label }}
+										</option>
+									</select>
+								</div>
 								<div class="field">
 									<div class="zoom-row">
 										<label for="midi-zoom-factor">Zoom factor per loop (0.1 to 1)</label>
@@ -956,11 +1874,11 @@
 											max="1"
 											step="0.01"
 											v-model.number="zoomFactor"
-											disabled
+											@change="handleMidiZoomFactorChange"
 										/>
 									</div>
 								</div>
-								<div class="file-row">
+								<div class="file-row midi-file-row">
 									<label class="btn" for="midi-file">Choose file</label>
 									<input
 										id="midi-file"
@@ -972,6 +1890,15 @@
 									<button
 										type="button"
 										class="btn"
+										@click="playOriginalMidi"
+										:disabled="!midiOriginalRenderedBuffer"
+									>
+										Play original
+									</button>
+									<button
+										type="button"
+										class="btn"
+										@click="toggleMidiPlayback"
 										:disabled="!midiPlaybackReady"
 									>
 										{{ midiIsPlaying ? 'Pause' : 'Play' }}
@@ -979,12 +1906,29 @@
 									<button
 										type="button"
 										class="btn"
+										@click="resetMidiPlayback"
 										:disabled="!midiPlaybackReady"
 									>
 										Reset
 									</button>
 								</div>
 								<p v-if="midiFileName" class="file-name">Selected: {{ midiFileName }}</p>
+								<div v-if="midiPlaybackReady || midiOperationLabel" class="progress-block">
+									<div class="progress-row">
+										<span class="progress-label">{{ midiOperationLabel || 'Playback ready' }}</span>
+									</div>
+									<progress v-if="midiOperationLabel"></progress>
+								</div>
+								<p class="metric">Cumulative zoom: {{ formatZoomValue(midiCumulativeZoom) }}</p>
+								<p class="metric">
+									Next note split at: {{ formatZoomValue(midiNextSplitZoom) }}
+								</p>
+								<p v-if="midiLastSplitZoom" class="metric">
+									Last split at {{ formatZoomValue(midiLastSplitZoom) }}: {{ midiLastSplitFromNotes }} -> {{ midiLastSplitToNotes }} notes
+								</p>
+								<p v-if="midiPlaybackReady || midiCurrentPlaybackBuffer" class="metric time-readout">
+									Playback: {{ formatTime(midiPlaybackTimeSeconds) }} / {{ formatTime(midiPlaybackDurationSeconds) }}
+								</p>
 								<p v-if="midiPlaybackReady" class="iteration">
 									Iteration: {{ midiLoopIteration + 1 }}
 								</p>
