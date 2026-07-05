@@ -246,6 +246,26 @@
 				text-align: left;
 			}
 
+			.midi-viz {
+				display: grid;
+				gap: 6px;
+			}
+
+			.midi-viz-caption {
+				font-size: 0.84rem;
+				color: #355a82;
+				text-align: left;
+			}
+
+			.midi-viz-canvas {
+				display: block;
+				width: 100%;
+				height: 156px;
+				border-radius: 10px;
+				border: 1px solid rgba(21, 71, 128, 0.28);
+				background: linear-gradient(180deg, #f9fbff 0%, #eef4ff 100%);
+			}
+
 			.progress-block {
 				display: grid;
 				gap: 6px;
@@ -288,6 +308,33 @@
 			const AudioContextClass =
 				window.AudioContext || window.webkitAudioContext;
 			const MIDI_ROOT_NOTE = 60;
+			const MIDI_MIN_DURATION_SECONDS = 0.0001;
+			const MIDI_LINEAGE_PALETTE = [
+				'#e63946',
+				'#1d3557',
+				'#2a9d8f',
+				'#f4a261',
+				'#6a4c93',
+				'#118ab2',
+				'#ef476f',
+				'#06d6a0',
+				'#ff7f11',
+				'#3a86ff',
+				'#8ac926',
+				'#ff006e',
+				'#8338ec',
+				'#1982c4',
+				'#ffbe0b',
+				'#386641',
+				'#bc6c25',
+				'#577590',
+				'#d62828',
+				'#4d908e',
+				'#7b2cbf',
+				'#f77f00',
+				'#0ead69',
+				'#4361ee',
+			];
 			const MIDI_SAMPLE_BASE_URL =
 				'https://madc0w.github.io/fractal-sound/samples/';
 			const MIDI_SAMPLE_FILES = [
@@ -326,6 +373,7 @@
 					time: note.time,
 					duration: note.duration,
 					velocity: note.velocity,
+					rootColorIndex: note.rootColorIndex,
 				};
 			}
 
@@ -490,7 +538,11 @@
 						midiLastSplitZoom: null,
 						midiLastSplitFromNotes: 0,
 						midiLastSplitToNotes: 0,
+						midiLastBasisNoteCount: 0,
+						midiLastPlayedNoteCount: 0,
 						midiSecondsPerQuarter: 0.5,
+						midiOriginalWindowSeconds: 0,
+						midiMotifReferenceMidi: MIDI_ROOT_NOTE,
 						midiOriginalNotes: [],
 						midiBasisNotes: [],
 						midiOriginalRenderedBuffer: null,
@@ -511,6 +563,10 @@
 						midiOperationLabel: '',
 						midiOperationCurrent: null,
 						midiOperationTotal: null,
+						midiVisualizationNotes: [],
+						midiVisualizationTitle: 'No MIDI loaded',
+						midiVisualizationRangeMin: 48,
+						midiVisualizationRangeMax: 72,
 						zoomFactor: 0.8,
 						loopIteration: 0,
 						isPlaying: false,
@@ -543,6 +599,9 @@
 				},
 				mounted() {
 					this.startUiTicker();
+					this.$nextTick(() => {
+						this.renderMidiVisualization();
+					});
 				},
 				beforeUnmount() {
 					this.stopUiTicker();
@@ -563,6 +622,11 @@
 					},
 					setActiveTab(tab) {
 						this.activeTab = tab;
+						if (tab === 'midi') {
+							this.$nextTick(() => {
+								this.renderMidiVisualization();
+							});
+						}
 					},
 					formatTime(seconds) {
 						const safeSeconds = Math.max(
@@ -644,6 +708,157 @@
 						} else {
 							this.midiPlaybackDurationSeconds = 0;
 							this.midiPlaybackTimeSeconds = 0;
+						}
+
+						this.renderMidiVisualization();
+					},
+					setMidiVisualizationNotes(notes, title = 'MIDI timeline') {
+						const clonedNotes = cloneNotes(notes || []);
+						this.midiVisualizationNotes = clonedNotes;
+						this.midiVisualizationTitle = title;
+
+						if (!clonedNotes.length) {
+							this.midiVisualizationRangeMin = 48;
+							this.midiVisualizationRangeMax = 72;
+							this.renderMidiVisualization();
+							return;
+						}
+
+						let minMidi = 127;
+						let maxMidi = 0;
+						clonedNotes.forEach((note) => {
+							minMidi = Math.min(minMidi, note.midi);
+							maxMidi = Math.max(maxMidi, note.midi);
+						});
+
+						this.midiVisualizationRangeMin = Math.max(0, minMidi - 1);
+						this.midiVisualizationRangeMax = Math.min(127, maxMidi + 1);
+						this.renderMidiVisualization();
+					},
+					getMidiLineageFillStyle(rootColorIndex) {
+						const index = Number.isFinite(rootColorIndex) ? rootColorIndex : 0;
+						const safeIndex =
+							((Math.trunc(index) % MIDI_LINEAGE_PALETTE.length) +
+								MIDI_LINEAGE_PALETTE.length) %
+							MIDI_LINEAGE_PALETTE.length;
+						return MIDI_LINEAGE_PALETTE[safeIndex];
+					},
+					renderMidiVisualization() {
+						const canvas = this.$refs.midiVizCanvas;
+
+						if (!canvas) {
+							return;
+						}
+
+						const cssWidth = Math.max(
+							220,
+							Math.floor(canvas.clientWidth || 440),
+						);
+						const cssHeight = Math.max(
+							120,
+							Math.floor(canvas.clientHeight || 156),
+						);
+						const dpr = window.devicePixelRatio || 1;
+
+						if (
+							canvas.width !== Math.floor(cssWidth * dpr) ||
+							canvas.height !== Math.floor(cssHeight * dpr)
+						) {
+							canvas.width = Math.floor(cssWidth * dpr);
+							canvas.height = Math.floor(cssHeight * dpr);
+						}
+
+						const context = canvas.getContext('2d');
+						if (!context) {
+							return;
+						}
+
+						context.setTransform(1, 0, 0, 1, 0, 0);
+						context.clearRect(0, 0, canvas.width, canvas.height);
+						context.scale(dpr, dpr);
+
+						const duration = Math.max(
+							0.1,
+							this.midiOriginalWindowSeconds || 0,
+							this.midiPlaybackDurationSeconds || 0,
+						);
+						const notes = this.midiVisualizationNotes || [];
+						const playbackCursor = Math.max(
+							0,
+							Math.min(duration, this.midiPlaybackTimeSeconds || 0),
+						);
+						const minMidi = this.midiVisualizationRangeMin;
+						const maxMidi = this.midiVisualizationRangeMax;
+						const pitchRange = Math.max(1, maxMidi - minMidi + 1);
+						const width = cssWidth;
+						const height = cssHeight;
+
+						context.fillStyle = '#f5f9ff';
+						context.fillRect(0, 0, width, height);
+
+						context.strokeStyle = 'rgba(21, 71, 128, 0.18)';
+						context.lineWidth = 1;
+						for (let i = 0; i <= 8; i += 1) {
+							const x = Math.round((i / 8) * width) + 0.5;
+							context.beginPath();
+							context.moveTo(x, 0);
+							context.lineTo(x, height);
+							context.stroke();
+						}
+
+						const maxDrawnNotes = 5000;
+						const stride = Math.max(1, Math.ceil(notes.length / maxDrawnNotes));
+
+						for (let index = 0; index < notes.length; index += stride) {
+							const note = notes[index];
+							const noteStart = Math.max(0, note.time);
+							const noteEnd = Math.min(duration, note.time + note.duration);
+							const noteDuration = noteEnd - noteStart;
+
+							if (noteDuration <= 0) {
+								continue;
+							}
+
+							const x = (noteStart / duration) * width;
+							const w = Math.max(1, (noteDuration / duration) * width);
+							const pitchPosition = (note.midi - minMidi) / pitchRange;
+							const y =
+								height -
+								pitchPosition * height -
+								Math.max(2, height / pitchRange);
+							const h = Math.max(2, height / pitchRange);
+
+							const isActive =
+								playbackCursor >= noteStart && playbackCursor <= noteEnd;
+							context.fillStyle = this.getMidiLineageFillStyle(
+								note.rootColorIndex,
+							);
+							context.fillRect(x, y, w, h);
+
+							if (isActive) {
+								context.strokeStyle = 'rgba(13, 42, 77, 0.8)';
+								context.lineWidth = 1;
+								context.strokeRect(
+									x + 0.5,
+									y + 0.5,
+									Math.max(1, w - 1),
+									Math.max(1, h - 1),
+								);
+							}
+						}
+
+						context.strokeStyle = '#dd4b29';
+						context.lineWidth = 2;
+						const cursorX = (playbackCursor / duration) * width;
+						context.beginPath();
+						context.moveTo(cursorX, 0);
+						context.lineTo(cursorX, height);
+						context.stroke();
+
+						if (!notes.length) {
+							context.fillStyle = '#355a82';
+							context.font = '13px Segoe UI';
+							context.fillText('No MIDI notes to visualize', 12, 22);
 						}
 					},
 					formatZoomValue(value) {
@@ -835,11 +1050,17 @@
 						this.midiLastSplitZoom = null;
 						this.midiLastSplitFromNotes = 0;
 						this.midiLastSplitToNotes = 0;
+						this.midiLastBasisNoteCount = this.midiOriginalNotes.length;
+						this.midiLastPlayedNoteCount = this.midiOriginalNotes.length;
 						this.midiNextSplitZoom = 2;
 						this.midiCurrentPlaybackBuffer = this.midiOriginalRenderedBuffer;
 						this.midiPlaybackDurationSeconds =
 							this.midiOriginalRenderedBuffer?.duration || 0;
 						this.midiPlaybackTimeSeconds = 0;
+						this.setMidiVisualizationNotes(
+							this.midiOriginalNotes,
+							'Original MIDI motif',
+						);
 					},
 					audioBufferToChannels(audioBuffer) {
 						return Array.from(
@@ -973,18 +1194,108 @@
 									left.time - right.time || left.midi - right.midi,
 							);
 					},
-					subdivideMidiNotes(notes) {
-						return notes.flatMap((note) => {
-							const halfDuration = Math.max(0.01, note.duration / 2);
-							return [
-								{ ...cloneNote(note), duration: halfDuration },
-								{
+					buildWindowedZoomedMidiNotes(notes, stretchFactor) {
+						const windowDuration = this.midiOriginalWindowSeconds;
+
+						if (!windowDuration || !Number.isFinite(stretchFactor)) {
+							return cloneNotes(notes);
+						}
+
+						const center = windowDuration / 2;
+
+						return notes
+							.map((note) => {
+								const originalStart = note.time;
+								const originalEnd = note.time + note.duration;
+								const stretchedStart =
+									center + (originalStart - center) * stretchFactor;
+								const stretchedEnd =
+									center + (originalEnd - center) * stretchFactor;
+								const clippedStart = Math.max(0, stretchedStart);
+								const clippedEnd = Math.min(windowDuration, stretchedEnd);
+								const clippedDuration = clippedEnd - clippedStart;
+
+								if (clippedDuration <= MIDI_MIN_DURATION_SECONDS) {
+									return null;
+								}
+
+								return {
 									...cloneNote(note),
-									time: note.time + halfDuration,
-									duration: halfDuration,
-								},
-							];
-						});
+									time: clippedStart,
+									duration: clippedDuration,
+								};
+							})
+							.filter(Boolean);
+					},
+					subdivideMidiNotes(notes) {
+						const phraseNotes = this.midiOriginalNotes;
+						const phraseDuration = this.midiOriginalWindowSeconds;
+
+						if (!phraseNotes.length || !phraseDuration) {
+							return cloneNotes(notes);
+						}
+
+						return notes
+							.flatMap((containerNote) => {
+								const containerStart = containerNote.time;
+								const containerDuration = Math.max(
+									MIDI_MIN_DURATION_SECONDS,
+									containerNote.duration,
+								);
+								const containerEnd = containerStart + containerDuration;
+								const pitchOffset =
+									Math.round(containerNote.midi) -
+									Math.round(this.midiMotifReferenceMidi);
+								const lineageColorIndex = Number.isFinite(
+									containerNote.rootColorIndex,
+								)
+									? containerNote.rootColorIndex
+									: 0;
+
+								return phraseNotes
+									.map((phraseNote) => {
+										const phraseStartRatio = phraseNote.time / phraseDuration;
+										const phraseEndRatio =
+											(phraseNote.time + phraseNote.duration) / phraseDuration;
+										const mappedStart =
+											containerStart + phraseStartRatio * containerDuration;
+										const mappedEnd =
+											containerStart + phraseEndRatio * containerDuration;
+										const clippedStart = Math.max(containerStart, mappedStart);
+										const clippedEnd = Math.min(containerEnd, mappedEnd);
+										const clippedDuration = clippedEnd - clippedStart;
+
+										if (clippedDuration <= MIDI_MIN_DURATION_SECONDS) {
+											return null;
+										}
+
+										const phraseVelocity = phraseNote.velocity ?? 0.85;
+										const containerVelocity = containerNote.velocity ?? 1;
+
+										return {
+											...cloneNote(phraseNote),
+											midi: Math.max(
+												0,
+												Math.min(
+													127,
+													Math.round(phraseNote.midi) + pitchOffset,
+												),
+											),
+											time: clippedStart,
+											duration: clippedDuration,
+											rootColorIndex: lineageColorIndex,
+											velocity: Math.min(
+												1,
+												Math.max(0, phraseVelocity * containerVelocity),
+											),
+										};
+									})
+									.filter(Boolean);
+							})
+							.sort(
+								(left, right) =>
+									left.time - right.time || left.midi - right.midi,
+							);
 					},
 					applyPendingMidiSplits(iteration) {
 						const cumulativeZoom = this.getCumulativeZoom(iteration);
@@ -1007,17 +1318,21 @@
 						notes,
 						sampleBuffer,
 						compressSampleToQuarterNote,
+						fixedDurationSeconds = null,
 					) {
 						this.setMidiOperation(
 							compressSampleToQuarterNote
 								? 'Rendering zoomed MIDI audio'
 								: 'Rendering original MIDI audio',
 						);
+						const noteDuration = notes.reduce(
+							(maximum, note) => Math.max(maximum, note.time + note.duration),
+							0,
+						);
 						const totalDuration =
-							notes.reduce(
-								(maximum, note) => Math.max(maximum, note.time + note.duration),
-								0,
-							) + 0.1;
+							fixedDurationSeconds != null
+								? Math.max(0.1, fixedDurationSeconds)
+								: noteDuration + 0.1;
 						const sampleRate = this.audioContext.sampleRate;
 						const offlineContext = new OfflineAudioContext(
 							sampleBuffer.numberOfChannels,
@@ -1111,12 +1426,24 @@
 					},
 					async renderMidiIterationOutput(iteration) {
 						this.applyPendingMidiSplits(iteration);
+						const basisNotes = this.midiBasisNotes;
+						this.midiLastBasisNoteCount = basisNotes.length;
 						const sampleBuffer =
 							await this.getMidiSampleBufferForIteration(iteration);
+						const playedNotes = this.buildWindowedZoomedMidiNotes(
+							basisNotes,
+							this.midiCumulativeZoom,
+						);
+						this.midiLastPlayedNoteCount = playedNotes.length;
+						this.setMidiVisualizationNotes(
+							playedNotes,
+							`Iteration ${iteration + 1} played window (recursive basis + zoom)`,
+						);
 						return this.renderSampledMidi(
-							this.midiBasisNotes,
+							playedNotes,
 							sampleBuffer,
 							true,
+							this.midiOriginalWindowSeconds,
 						);
 					},
 					stopMidiPlayback(resetToStart = false) {
@@ -1194,6 +1521,12 @@
 						};
 
 						this.midiOriginalSource = source;
+						this.midiLastBasisNoteCount = this.midiOriginalNotes.length;
+						this.midiLastPlayedNoteCount = this.midiOriginalNotes.length;
+						this.setMidiVisualizationNotes(
+							this.midiOriginalNotes,
+							'Original MIDI motif',
+						);
 						this.midiCurrentPlaybackBuffer = this.midiOriginalRenderedBuffer;
 						this.midiPlaybackDurationSeconds =
 							this.midiOriginalRenderedBuffer.duration;
@@ -1693,7 +2026,12 @@
 							this.midiIsPlaying = false;
 							this.midiOriginalNotes = [];
 							this.midiBasisNotes = [];
+							this.midiLastBasisNoteCount = 0;
+							this.midiLastPlayedNoteCount = 0;
+							this.midiOriginalWindowSeconds = 0;
+							this.midiMotifReferenceMidi = MIDI_ROOT_NOTE;
 							this.midiOriginalRenderedBuffer = null;
+							this.setMidiVisualizationNotes([], 'No MIDI loaded');
 							this.midiSampleBuffers = new Map();
 							this.midiCumulativeZoom = 1;
 							this.midiStatusText =
@@ -1725,9 +2063,26 @@
 							}
 
 							const bpm = midi.header.tempos[0]?.bpm || 120;
+							const parsedDuration = parsedNotes.reduce(
+								(maximum, note) => Math.max(maximum, note.time + note.duration),
+								0,
+							);
+							const midiHeaderDuration = Number(midi.duration) || 0;
 							this.midiSecondsPerQuarter = 60 / bpm;
-							this.midiOriginalNotes = cloneNotes(parsedNotes);
-							this.midiBasisNotes = cloneNotes(parsedNotes);
+							this.midiOriginalWindowSeconds = Math.max(
+								0.1,
+								parsedDuration,
+								midiHeaderDuration,
+							);
+							this.midiMotifReferenceMidi = parsedNotes[0].midi;
+							const coloredOriginalNotes = parsedNotes.map(
+								(note, noteIndex) => ({
+									...cloneNote(note),
+									rootColorIndex: noteIndex,
+								}),
+							);
+							this.midiOriginalNotes = cloneNotes(coloredOriginalNotes);
+							this.midiBasisNotes = cloneNotes(coloredOriginalNotes);
 							this.midiLoopIteration = 0;
 							this.midiPausedOffset = 0;
 							this.midiCumulativeZoom = 1;
@@ -1741,7 +2096,12 @@
 							this.midiPlaybackReady = false;
 							this.midiOriginalNotes = [];
 							this.midiBasisNotes = [];
+							this.midiLastBasisNoteCount = 0;
+							this.midiLastPlayedNoteCount = 0;
+							this.midiOriginalWindowSeconds = 0;
+							this.midiMotifReferenceMidi = MIDI_ROOT_NOTE;
 							this.midiOriginalRenderedBuffer = null;
+							this.setMidiVisualizationNotes([], 'No MIDI loaded');
 							this.stopMidiOriginalPlayback();
 							this.midiSampleBuffers = new Map();
 							this.clearMidiOperation();
@@ -1921,14 +2281,21 @@
 								</div>
 								<p class="metric">Cumulative zoom: {{ formatZoomValue(midiCumulativeZoom) }}</p>
 								<p class="metric">
-									Next note split at: {{ formatZoomValue(midiNextSplitZoom) }}
+									Next motif recursion at: {{ formatZoomValue(midiNextSplitZoom) }}
 								</p>
 								<p v-if="midiLastSplitZoom" class="metric">
-									Last split at {{ formatZoomValue(midiLastSplitZoom) }}: {{ midiLastSplitFromNotes }} -> {{ midiLastSplitToNotes }} notes
+									Last recursion basis at {{ formatZoomValue(midiLastSplitZoom) }}: {{ midiLastSplitFromNotes }} -> {{ midiLastSplitToNotes }} notes
+								</p>
+								<p class="metric">
+									Current played notes after zoom clip: {{ midiLastPlayedNoteCount }} (from basis {{ midiLastBasisNoteCount }})
 								</p>
 								<p v-if="midiPlaybackReady || midiCurrentPlaybackBuffer" class="metric time-readout">
 									Playback: {{ formatTime(midiPlaybackTimeSeconds) }} / {{ formatTime(midiPlaybackDurationSeconds) }}
 								</p>
+								<div class="midi-viz">
+									<canvas ref="midiVizCanvas" class="midi-viz-canvas"></canvas>
+									<p class="midi-viz-caption">{{ midiVisualizationTitle }}</p>
+								</div>
 								<p v-if="midiPlaybackReady" class="iteration">
 									Iteration: {{ midiLoopIteration + 1 }}
 								</p>
